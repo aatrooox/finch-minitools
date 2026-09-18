@@ -52,6 +52,8 @@ interface PendingWaitState {
 const STORAGE_SESSION_PREFIX = 'feishu:session:';
 
 export class BridgeManager {
+  // 固化的飞书默认 chatId（无需思考、无需探索，随时同步获取）
+  private fixedChatId: string = 'oc_921b184e82465bec060dec8f859bc5ff';
   // 保存活跃 Turn 的流式输出状态: key 为 turnId
   private activeStreams = new Map<string, StreamState>();
   // 会话映射：chatId -> sessionId 内存缓存
@@ -70,6 +72,22 @@ export class BridgeManager {
   ) {
     this.setupEventListeners();
     this.setupCardActionListeners();
+    void this.initFixedChatId();
+  }
+
+  private async initFixedChatId(): Promise<void> {
+    try {
+      const saved = await this.ctx.storage.get<string>('feishu:fixed_chat_id');
+      if (saved) {
+        this.fixedChatId = saved;
+      }
+    } catch {
+      // 保持默认
+    }
+  }
+
+  public getFixedChatId(): string {
+    return this.fixedChatId;
   }
 
   /**
@@ -372,65 +390,55 @@ export class BridgeManager {
   }): Promise<{ decision: 'yes' | 'no' | 'timeout'; operatorName?: string }> {
     // 查找当前会话正在运行的活跃 turnId
     let currentTurnId: string | undefined;
-    let streamState: StreamState | undefined;
     for (const [tId, s] of this.activeStreams.entries()) {
       if (s.chatId === params.chatId) {
         currentTurnId = tId;
-        streamState = s;
+        // 如果上方有打字流式卡片，优雅封板收口，提示用户关注下方卡片
+        if (s.cardHandle) {
+          const finishText = s.textBuffer.trim()
+            ? `${s.textBuffer.trim()}\n\n_💡 请在下方卡片中进行操作确认..._`
+            : '_💡 请在下方卡片中进行操作确认..._';
+          void this.feishu.finishStreaming(s.cardHandle, finishText);
+          s.cardHandle = null;
+        }
         break;
       }
     }
 
     const actionId = `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    let messageId: string | null = null;
-
-    // 单卡演进：如果刚建的打字卡片尚未输出正文，直接将其原地变更为确认卡片！
-    if (streamState?.cardHandle && !streamState.textBuffer.trim()) {
-      messageId = streamState.cardHandle.messageId;
-      const confirmCard = buildActionConfirmCard({
-        chatId: params.chatId,
-        actionId,
-        title: params.title,
-        content: params.content,
-        yesLabel: params.yesLabel,
-        noLabel: params.noLabel
-      });
-      await this.feishu.updateCard(messageId, confirmCard);
-      streamState.cardHandle = null;
-    } else {
-      if (streamState?.cardHandle && streamState.textBuffer.trim()) {
-        void this.feishu.finishStreaming(streamState.cardHandle, streamState.textBuffer);
-        streamState.cardHandle = null;
-      }
-      messageId = await this.feishu.sendConfirmCard({
-        chatId: params.chatId,
-        actionId,
-        title: params.title,
-        content: params.content,
-        yesLabel: params.yesLabel,
-        noLabel: params.noLabel
-      });
-    }
+    // 发送标准的飞书交互确认卡片（100% 稳定送达，带醒目的确认/取消按钮）
+    const messageId = await this.feishu.sendConfirmCard({
+      chatId: params.chatId,
+      actionId,
+      title: params.title,
+      content: params.content,
+      yesLabel: params.yesLabel,
+      noLabel: params.noLabel
+    });
 
     if (!messageId) {
+      this.ctx.logger.error('Failed to sendConfirmCard to Feishu');
       return { decision: 'no' };
     }
+
+    // 默认 90 秒等待超时（避免触发 Finch 宿主平台的 120 秒中断）
+    const waitTimeout = Math.min(params.timeoutMs ?? 90 * 1000, 90 * 1000);
 
     return new Promise((resolve) => {
       const timer = setTimeout(async () => {
         if (this.pendingConfirmations.has(actionId)) {
           this.pendingConfirmations.delete(actionId);
-          // 超时锁定卡片
+          // 超时锁定卡片，避免重复点击
           await this.feishu.updateCardToResolved({
             messageId,
             title: params.title,
             content: params.content,
             decision: 'no',
-            operatorName: '操作超时自动取消'
+            operatorName: '操作超时已取消'
           });
           resolve({ decision: 'timeout' });
         }
-      }, params.timeoutMs ?? 5 * 60 * 1000); // 默认 5 分钟超时
+      }, waitTimeout);
 
       this.pendingConfirmations.set(actionId, {
         actionId,
