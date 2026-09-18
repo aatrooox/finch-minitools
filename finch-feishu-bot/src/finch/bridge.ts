@@ -6,7 +6,8 @@ import {
   buildQuestionResolvedCard,
   buildPermissionWaitCard,
   buildPermissionWaitResolvedCard,
-  buildFollowupStreamingCard
+  buildFollowupStreamingCard,
+  buildActionConfirmCard
 } from '../feishu/card.js';
 
 interface StreamState {
@@ -305,11 +306,17 @@ export class BridgeManager {
       }
 
       if (isAutoReply) {
-        // 按需建卡：先登记状态，收到首个 assistant.delta 时再创建流式卡片
-        // 这样如果一上来就触发 turn.waiting，就不会产生上方多余的空流式卡片
+        // 第一时间在飞书创建流式卡片，提供原生的打字/思考中交互反馈！
+        let cardHandle: CardSessionHandle | null = null;
+        try {
+          cardHandle = await this.feishu.createStreamingCard(msg.chatId);
+        } catch (err) {
+          this.ctx.logger.error('Failed to pre-create streaming card:', err);
+        }
+
         this.activeStreams.set(receipt.turnId, {
           chatId: msg.chatId,
-          cardHandle: null,
+          cardHandle,
           textBuffer: '',
           lastPatchTime: Date.now(),
           patchTimer: null
@@ -333,27 +340,45 @@ export class BridgeManager {
   }): Promise<{ decision: 'yes' | 'no' | 'timeout'; operatorName?: string }> {
     // 查找当前会话正在运行的活跃 turnId
     let currentTurnId: string | undefined;
+    let streamState: StreamState | undefined;
     for (const [tId, s] of this.activeStreams.entries()) {
       if (s.chatId === params.chatId) {
         currentTurnId = tId;
-        // 如果上方已经有流式输出，将上方卡片封板结算，避免悬挂
-        if (s.cardHandle && s.textBuffer.trim()) {
-          void this.feishu.finishStreaming(s.cardHandle, s.textBuffer);
-          s.cardHandle = null;
-        }
+        streamState = s;
         break;
       }
     }
 
     const actionId = `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const messageId = await this.feishu.sendConfirmCard({
-      chatId: params.chatId,
-      actionId,
-      title: params.title,
-      content: params.content,
-      yesLabel: params.yesLabel,
-      noLabel: params.noLabel
-    });
+    let messageId: string | null = null;
+
+    // 单卡演进：如果刚建的打字卡片尚未输出正文，直接将其原地变更为确认卡片！
+    if (streamState?.cardHandle && !streamState.textBuffer.trim()) {
+      messageId = streamState.cardHandle.messageId;
+      const confirmCard = buildActionConfirmCard({
+        chatId: params.chatId,
+        actionId,
+        title: params.title,
+        content: params.content,
+        yesLabel: params.yesLabel,
+        noLabel: params.noLabel
+      });
+      await this.feishu.updateCard(messageId, confirmCard);
+      streamState.cardHandle = null;
+    } else {
+      if (streamState?.cardHandle && streamState.textBuffer.trim()) {
+        void this.feishu.finishStreaming(streamState.cardHandle, streamState.textBuffer);
+        streamState.cardHandle = null;
+      }
+      messageId = await this.feishu.sendConfirmCard({
+        chatId: params.chatId,
+        actionId,
+        title: params.title,
+        content: params.content,
+        yesLabel: params.yesLabel,
+        noLabel: params.noLabel
+      });
+    }
 
     if (!messageId) {
       return { decision: 'no' };
@@ -444,13 +469,7 @@ export class BridgeManager {
                   patchTimer: null
                 });
               }
-              return {
-                toast: {
-                  type: 'success',
-                  content: `已选择：${answer}`
-                },
-                card: waitingCard
-              };
+              return {};
             }
           } catch (err) {
             this.ctx.logger.error('Failed to respondToWait for card button question:', err);
@@ -493,13 +512,7 @@ export class BridgeManager {
                   patchTimer: null
                 });
               }
-              return {
-                toast: {
-                  type: allow ? 'success' : 'warning',
-                  content: allow ? '已允许授权' : '已拒绝请求'
-                },
-                card: waitingCard
-              };
+              return {};
             }
           } catch (err) {
             this.ctx.logger.error('Failed to respondToWait for card button permission:', err);
@@ -553,21 +566,10 @@ export class BridgeManager {
           operatorName: actionEvt.operatorName
         });
 
-        return {
-          toast: {
-            type: decision === 'yes' ? 'success' : 'warning',
-            content: decision === 'yes' ? '已确认允许' : '已取消/拒绝'
-          },
-          card: waitingCard
-        };
+        return {};
       }
 
-      return {
-        toast: {
-          type: decision === 'yes' ? 'success' : 'warning',
-          content: decision === 'yes' ? '已确认允许' : '已取消/拒绝'
-        }
-      };
+      return {};
     });
   }
 
@@ -623,14 +625,19 @@ export class BridgeManager {
         }
 
         case 'turn.waiting': {
-          // 1. 如果当前 turn 正在流式输出，先结算流式卡片，避免悬挂
+          // 1. 如果当前 turn 正在流式输出，检查是否可以直接复用该卡片
+          let reusedMessageId: string | undefined;
           if (stream) {
             if (stream.patchTimer) {
               clearTimeout(stream.patchTimer);
               stream.patchTimer = null;
             }
-            if (stream.cardHandle && stream.textBuffer.trim()) {
-              await this.feishu.finishStreaming(stream.cardHandle, stream.textBuffer);
+            if (stream.cardHandle) {
+              if (stream.textBuffer.trim()) {
+                await this.feishu.finishStreaming(stream.cardHandle, stream.textBuffer);
+              } else {
+                reusedMessageId = stream.cardHandle.messageId;
+              }
             }
             this.activeStreams.delete(turnId);
           }
@@ -657,8 +664,13 @@ export class BridgeManager {
                   question: firstQ.question,
                   options: firstQ.options
                 });
-                const msgId = await this.feishu.sendCard(chatId, qCard);
-                if (msgId) cardMessageId = msgId;
+                if (reusedMessageId) {
+                  await this.feishu.updateCard(reusedMessageId, qCard);
+                  cardMessageId = reusedMessageId;
+                } else {
+                  const msgId = await this.feishu.sendCard(chatId, qCard);
+                  if (msgId) cardMessageId = msgId;
+                }
                 cardData = {
                   kind: 'question',
                   header: firstQ.header,
@@ -672,8 +684,13 @@ export class BridgeManager {
                 toolTitle: wait.toolTitle,
                 toolInput: wait.toolInput
               });
-              const msgId = await this.feishu.sendCard(chatId, pCard);
-              if (msgId) cardMessageId = msgId;
+              if (reusedMessageId) {
+                await this.feishu.updateCard(reusedMessageId, pCard);
+                cardMessageId = reusedMessageId;
+              } else {
+                const msgId = await this.feishu.sendCard(chatId, pCard);
+                if (msgId) cardMessageId = msgId;
+              }
               cardData = {
                 kind: 'permission',
                 toolName: wait.toolName,

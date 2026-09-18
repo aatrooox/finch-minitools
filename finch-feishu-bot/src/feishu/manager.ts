@@ -227,7 +227,7 @@ export class FeishuManager {
             }
 
             if (this.onCardActionCallback) {
-              const res = await this.onCardActionCallback({
+              await this.onCardActionCallback({
                 messageId,
                 chatId,
                 operatorOpenId,
@@ -237,11 +237,11 @@ export class FeishuManager {
                 decision,
                 rawValue: actionVal
               });
-              return res || {};
             }
           } catch (err) {
             this.ctx.logger.error('Error handling card.action.trigger:', err);
           }
+          // 统一返回空对象响应 ACK，所有卡片更新完全走异步 updateCard，避免触发飞书客户端 code 200672 弹窗
           return {};
         }
       });
