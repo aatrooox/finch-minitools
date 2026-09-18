@@ -497,7 +497,7 @@ export class BridgeManager {
               });
 
               if (targetMessageId) {
-                await this.feishu.updateCard(targetMessageId, waitingCard);
+                void this.feishu.updateCard(targetMessageId, waitingCard);
 
                 // 将后续流式输出接力挂接到该卡片上
                 this.activeStreams.set(pending.turnId, {
@@ -510,7 +510,8 @@ export class BridgeManager {
                   patchTimer: null
                 });
               }
-              return {};
+              // 直接返回接力卡片，飞书客户端立刻原地切换为等待后续流式回答，绝不回滚！
+              return waitingCard;
             }
           } catch (err) {
             this.ctx.logger.error('Failed to respondToWait for card button question:', err);
@@ -540,7 +541,7 @@ export class BridgeManager {
               });
 
               if (targetMessageId) {
-                await this.feishu.updateCard(targetMessageId, waitingCard);
+                void this.feishu.updateCard(targetMessageId, waitingCard);
 
                 // 将后续流式输出接力挂接到该卡片上
                 this.activeStreams.set(pending.turnId, {
@@ -553,7 +554,8 @@ export class BridgeManager {
                   patchTimer: null
                 });
               }
-              return {};
+              // 直接返回接力卡片，飞书客户端立刻原地切换为等待后续流式回答，绝不回滚！
+              return waitingCard;
             }
           } catch (err) {
             this.ctx.logger.error('Failed to respondToWait for card button permission:', err);
