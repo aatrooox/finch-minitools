@@ -92,9 +92,9 @@ export class BridgeManager {
             stream.textBuffer += event.delta;
           }
 
-          // 节流推送，避免飞书频控限制（限制每 800ms 刷新一次）
+          // 优化流式更新频率：从原本呆板的 800ms 降至更敏捷的 150ms，既不超频，又能享受丝滑的打字机流式效果
           const now = Date.now();
-          if (now - stream.lastPatchTime > 800) {
+          if (now - stream.lastPatchTime > 150) {
             stream.lastPatchTime = now;
             if (stream.cardMessageId) {
               void this.feishu.updateCard(stream.cardMessageId, stream.textBuffer, 'generating');
@@ -106,7 +106,7 @@ export class BridgeManager {
               if (stream.cardMessageId) {
                 void this.feishu.updateCard(stream.cardMessageId, stream.textBuffer, 'generating');
               }
-            }, 800);
+            }, 150);
           }
           break;
         }
