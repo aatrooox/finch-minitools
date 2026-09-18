@@ -76,7 +76,7 @@ export async function activate(ctx: finch.MiniToolContext) {
       const { chatId, title, content, yesLabel, noLabel, timeoutSeconds } = params;
       ctx.logger.info('Agent invoking feishu_ask_confirmation:', params);
 
-      const resolvedChatId = bridge.resolveChatId(chatId);
+      const resolvedChatId = await bridge.resolveChatId(chatId);
       if (!resolvedChatId) {
         return {
           content: [

@@ -75,7 +75,7 @@ export class BridgeManager {
   /**
    * 智能解析目标 chatId（若未传则自动推断当前活跃会话或最近绑定的会话）
    */
-  public resolveChatId(chatId?: string): string | undefined {
+  public async resolveChatId(chatId?: string): Promise<string | undefined> {
     if (chatId && chatId.trim()) return chatId.trim();
 
     // 1. 优先从当前活跃的流式会话中寻找
@@ -87,6 +87,17 @@ export class BridgeManager {
     const chats = Array.from(this.chatSessions.keys());
     if (chats.length > 0) {
       return chats[chats.length - 1];
+    }
+
+    // 3. 从持久化存储中获取最近活跃的 chatId
+    const lastChat = await this.ctx.storage.get<string>('feishu:last_active_chat');
+    if (lastChat) return lastChat;
+
+    // 4. 扫描 storage 中所有已绑定的 feishu:session: 键
+    const allKeys = await this.ctx.storage.keys();
+    const chatKeys = allKeys.filter(k => k.startsWith(STORAGE_SESSION_PREFIX));
+    if (chatKeys.length > 0) {
+      return chatKeys[0].slice(STORAGE_SESSION_PREFIX.length);
     }
 
     return undefined;
@@ -132,6 +143,7 @@ export class BridgeManager {
     this.chatSessions.set(msg.chatId, sessionId);
     this.sessionChats.set(sessionId, msg.chatId);
     await this.ctx.storage.set(storageKey, sessionId);
+    await this.ctx.storage.set('feishu:last_active_chat', msg.chatId);
     return sessionId;
   }
 
