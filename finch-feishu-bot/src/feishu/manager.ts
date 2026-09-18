@@ -364,12 +364,12 @@ export class FeishuManager {
   /**
    * 创建飞书原生流式卡片并发送到会话
    */
-  public async createStreamingCard(chatId: string): Promise<CardSessionHandle | null> {
+  public async createStreamingCard(chatId: string, initialText: string = ''): Promise<CardSessionHandle | null> {
     if (!this.client) return null;
 
     try {
       // 1. 创建流式卡片实体，获得 card_id
-      const initialCard = buildCardkitStreamingCard('');
+      const initialCard = buildCardkitStreamingCard(initialText);
       const cardRes = await this.client.cardkit.v1.card.create({
         data: {
           type: 'card_json',
@@ -455,7 +455,19 @@ export class FeishuManager {
 
       handle.sequence += 1;
       const seq = handle.sequence;
-      const config = { streaming_mode: false };
+
+      // 提取干净纯文本作为卡片 summary，彻底清除列表上的「正在生成回答...」
+      const cleanSummary = finalContent
+        ? finalContent.slice(0, 80).replace(/[\r\n#*`_>\[\]]/g, ' ').replace(/\s+/g, ' ').trim()
+        : '';
+      const summaryText = cleanSummary || '回答已完成';
+
+      const config = {
+        streaming_mode: false,
+        summary: {
+          content: summaryText
+        }
+      };
 
       await this.client.cardkit.v1.card.settings({
         path: {

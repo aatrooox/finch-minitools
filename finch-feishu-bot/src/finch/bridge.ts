@@ -397,17 +397,10 @@ export class BridgeManager {
       }
 
       if (isAutoReply) {
-        // 第一时间在飞书创建流式卡片，提供原生的打字/思考中交互反馈！
-        let cardHandle: CardSessionHandle | null = null;
-        try {
-          cardHandle = await this.feishu.createStreamingCard(msg.chatId);
-        } catch (err) {
-          this.ctx.logger.error('Failed to pre-create streaming card:', err);
-        }
-
+        // 按需延迟建卡：收到消息时只记录状态，绝不提前向飞书下发空白无字卡片
         this.activeStreams.set(receipt.turnId, {
           chatId: msg.chatId,
-          cardHandle,
+          cardHandle: null,
           textBuffer: '',
           lastPatchTime: Date.now(),
           patchTimer: null
@@ -654,9 +647,9 @@ export class BridgeManager {
             stream.textBuffer += event.delta;
           }
 
-          // 若属于常规会话且尚未建卡，按需创建飞书原生流式卡片
+          // 若属于常规会话且尚未建卡，按需创建飞书原生流式卡片，并立即带入首批生成的文字
           if (!stream.cardHandle && !stream.targetMessageId) {
-            stream.cardHandle = await this.feishu.createStreamingCard(stream.chatId);
+            stream.cardHandle = await this.feishu.createStreamingCard(stream.chatId, stream.textBuffer);
           }
 
           const now = Date.now();
