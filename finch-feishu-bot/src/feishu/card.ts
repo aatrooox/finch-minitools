@@ -139,3 +139,248 @@ export function buildActionResolvedCard(params: {
     ]
   };
 }
+
+/**
+ * 构造问答选择卡片 (SessionQuestionWait)
+ */
+export function buildQuestionCard(params: {
+  requestId: string;
+  header: string;
+  question: string;
+  options: ReadonlyArray<{ readonly label: string; readonly description?: string }>;
+}) {
+  const { requestId, header, question, options } = params;
+
+  let mdContent = `**${question}**\n\n`;
+  options.forEach((opt, idx) => {
+    mdContent += `${idx + 1}. **${opt.label}**${opt.description ? ` - ${opt.description}` : ''}\n`;
+  });
+
+  const buttons = options.slice(0, 5).map((opt, idx) => ({
+    tag: 'button',
+    text: {
+      tag: 'plain_text',
+      content: `${idx + 1}. ${opt.label}`.slice(0, 20)
+    },
+    type: idx === 0 ? 'primary' : 'default',
+    value: {
+      waitRequestId: requestId,
+      kind: 'question',
+      header,
+      answer: opt.label,
+      index: idx + 1
+    }
+  }));
+
+  const elements: any[] = [
+    {
+      tag: 'markdown',
+      content: mdContent
+    }
+  ];
+
+  if (buttons.length > 0) {
+    elements.push({
+      tag: 'action',
+      actions: buttons
+    });
+  }
+
+  elements.push({
+    tag: 'note',
+    elements: [
+      {
+        tag: 'plain_text',
+        content: '💡 提示：可直接点击上方选项，或在聊天中回复序号（如 1、2）'
+      }
+    ]
+  });
+
+  return {
+    config: {
+      wide_screen_mode: true,
+      update_multi: true
+    },
+    header: {
+      template: 'blue',
+      title: {
+        tag: 'plain_text',
+        content: header || '请选择或确认'
+      }
+    },
+    elements
+  };
+}
+
+/**
+ * 问答选择已回答后的状态卡片
+ */
+export function buildQuestionResolvedCard(params: {
+  header: string;
+  question: string;
+  selectedAnswer: string;
+  operatorName?: string;
+}) {
+  const { header, question, selectedAnswer, operatorName } = params;
+  const who = operatorName ? ` (操作人: ${operatorName})` : '';
+
+  return {
+    config: {
+      wide_screen_mode: true,
+      update_multi: true
+    },
+    header: {
+      template: 'green',
+      title: {
+        tag: 'plain_text',
+        content: header || '已回答'
+      }
+    },
+    elements: [
+      {
+        tag: 'markdown',
+        content: `**${question}**\n\n> 🎯 **已选择/回复**: ${selectedAnswer}`
+      },
+      {
+        tag: 'hr'
+      },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: `✅ 已提交${who}`
+          }
+        ]
+      }
+    ]
+  };
+}
+
+/**
+ * 构造权限申请卡片 (SessionPermissionWait)
+ */
+export function buildPermissionWaitCard(params: {
+  requestId: string;
+  toolName: string;
+  toolTitle?: string;
+  toolInput?: unknown;
+}) {
+  const { requestId, toolName, toolTitle, toolInput } = params;
+
+  let inputSummary = '';
+  if (toolInput) {
+    try {
+      inputSummary = typeof toolInput === 'string' ? toolInput : JSON.stringify(toolInput, null, 2);
+    } catch {
+      inputSummary = String(toolInput);
+    }
+  }
+
+  const mdContent = `Agent 正在请求执行以下工具操作：\n\n**工具名称**: \`${toolName}\`${toolTitle ? ` (${toolTitle})` : ''}\n` +
+    (inputSummary ? `\n\`\`\`json\n${inputSummary.slice(0, 500)}\n\`\`\`\n` : '');
+
+  return {
+    config: {
+      wide_screen_mode: true,
+      update_multi: true
+    },
+    header: {
+      template: 'orange',
+      title: {
+        tag: 'plain_text',
+        content: '⚠️ 操作授权申请'
+      }
+    },
+    elements: [
+      {
+        tag: 'markdown',
+        content: mdContent
+      },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: {
+              tag: 'plain_text',
+              content: '允许'
+            },
+            type: 'primary',
+            value: {
+              waitRequestId: requestId,
+              kind: 'permission',
+              allow: true
+            }
+          },
+          {
+            tag: 'button',
+            text: {
+              tag: 'plain_text',
+              content: '拒绝'
+            },
+            type: 'danger',
+            value: {
+              waitRequestId: requestId,
+              kind: 'permission',
+              allow: false
+            }
+          }
+        ]
+      },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: '💡 提示：可点击按钮授权，或在聊天中直接回复“允许/同意”或“拒绝”'
+          }
+        ]
+      }
+    ]
+  };
+}
+
+/**
+ * 权限状态结算后的卡片
+ */
+export function buildPermissionWaitResolvedCard(params: {
+  toolName: string;
+  allow: boolean;
+  operatorName?: string;
+}) {
+  const { toolName, allow, operatorName } = params;
+  const who = operatorName ? ` (操作人: ${operatorName})` : '';
+
+  return {
+    config: {
+      wide_screen_mode: true,
+      update_multi: true
+    },
+    header: {
+      template: allow ? 'green' : 'red',
+      title: {
+        tag: 'plain_text',
+        content: allow ? '✅ 权限已授权' : '❌ 权限已拒绝'
+      }
+    },
+    elements: [
+      {
+        tag: 'markdown',
+        content: `工具 \`${toolName}\` 执行申请：**${allow ? '已允许' : '已拒绝'}**`
+      },
+      {
+        tag: 'hr'
+      },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: `${allow ? '已允许授权' : '已拒绝请求'}${who}`
+          }
+        ]
+      }
+    ]
+  };
+}

@@ -14,6 +14,54 @@ export interface CardSessionHandle {
   sequence: number;
 }
 
+function parseInboundMessageContent(messageType: string, contentStr: string): string {
+  if (!contentStr) return '';
+  try {
+    const parsed = JSON.parse(contentStr);
+    if (messageType === 'text') {
+      return parsed.text || '';
+    }
+    if (messageType === 'post') {
+      const postBody = parsed.zh_cn || parsed.en_us || parsed.ja_jp || Object.values(parsed)[0];
+      if (!postBody || typeof postBody !== 'object') {
+        return '';
+      }
+      const lines: string[] = [];
+      if (postBody.title && typeof postBody.title === 'string') {
+        lines.push(postBody.title);
+      }
+      if (Array.isArray(postBody.content)) {
+        for (const paragraph of postBody.content) {
+          if (Array.isArray(paragraph)) {
+            let lineText = '';
+            for (const elem of paragraph) {
+              if (!elem) continue;
+              if (elem.tag === 'text' && typeof elem.text === 'string') {
+                lineText += elem.text;
+              } else if (elem.tag === 'a' && typeof elem.text === 'string') {
+                lineText += elem.href ? `[${elem.text}](${elem.href})` : elem.text;
+              } else if (elem.tag === 'at') {
+                if (elem.user_name) {
+                  lineText += `@${elem.user_name} `;
+                }
+              } else if (elem.tag === 'code_block' && typeof elem.text === 'string') {
+                lineText += `\n\`\`\`\n${elem.text}\n\`\`\`\n`;
+              }
+            }
+            if (lineText) {
+              lines.push(lineText);
+            }
+          }
+        }
+      }
+      return lines.join('\n');
+    }
+    return parsed.text || contentStr;
+  } catch {
+    return contentStr;
+  }
+}
+
 export class FeishuManager {
   private client: lark.Client | null = null;
   private wsClient: lark.WSClient | null = null;
@@ -115,18 +163,12 @@ export class FeishuManager {
               return;
             }
 
-            // 目前主要支持文本类型
-            if (message.message_type !== 'text') {
+            // 支持文本及富文本 post 消息类型
+            if (message.message_type !== 'text' && message.message_type !== 'post') {
               return;
             }
 
-            let textContent = '';
-            try {
-              const parsed = JSON.parse(message.content);
-              textContent = parsed.text || '';
-            } catch {
-              textContent = message.content || '';
-            }
+            let textContent = parseInboundMessageContent(message.message_type, message.content);
 
             // 过滤群聊中的 @ 机器人标签 (格式为 @_user_1 等)
             textContent = textContent.replace(/@_user_\d+\s*/g, '').trim();
@@ -228,6 +270,52 @@ export class FeishuManager {
   }
 
   /**
+   * 发送任意飞书卡片消息 (interactive)
+   */
+  public async sendCard(chatId: string, card: any): Promise<string | null> {
+    if (!this.client) return null;
+
+    try {
+      const res = await this.client.im.message.create({
+        params: {
+          receive_id_type: 'chat_id'
+        },
+        data: {
+          receive_id: chatId,
+          msg_type: 'interactive',
+          content: JSON.stringify(card)
+        }
+      });
+      return res?.data?.message_id || null;
+    } catch (err) {
+      this.ctx.logger.error('Failed to send card to Feishu:', err);
+      return null;
+    }
+  }
+
+  /**
+   * 更新已发送的飞书卡片消息
+   */
+  public async updateCard(messageId: string, card: any): Promise<boolean> {
+    if (!this.client) return false;
+
+    try {
+      await this.client.im.message.patch({
+        path: {
+          message_id: messageId
+        },
+        data: {
+          content: JSON.stringify(card)
+        }
+      });
+      return true;
+    } catch (err) {
+      this.ctx.logger.error('Failed to patch card message:', err);
+      return false;
+    }
+  }
+
+  /**
    * 发送带 Yes / No 按钮的交互式确认卡片
    */
   public async sendConfirmCard(params: {
@@ -238,25 +326,8 @@ export class FeishuManager {
     yesLabel?: string;
     noLabel?: string;
   }): Promise<string | null> {
-    if (!this.client) return null;
-
-    try {
-      const card = buildActionConfirmCard(params);
-      const res = await this.client.im.message.create({
-        params: {
-          receive_id_type: 'chat_id'
-        },
-        data: {
-          receive_id: params.chatId,
-          msg_type: 'interactive',
-          content: JSON.stringify(card)
-        }
-      });
-      return res?.data?.message_id || null;
-    } catch (err) {
-      this.ctx.logger.error('Failed to send confirm card to Feishu:', err);
-      return null;
-    }
+    const card = buildActionConfirmCard(params);
+    return this.sendCard(params.chatId, card);
   }
 
   /**
@@ -269,23 +340,8 @@ export class FeishuManager {
     decision: 'yes' | 'no';
     operatorName?: string;
   }): Promise<boolean> {
-    if (!this.client) return false;
-
-    try {
-      const card = buildActionResolvedCard(params);
-      await this.client.im.message.patch({
-        path: {
-          message_id: params.messageId
-        },
-        data: {
-          content: JSON.stringify(card)
-        }
-      });
-      return true;
-    } catch (err) {
-      this.ctx.logger.error('Failed to update card to resolved state:', err);
-      return false;
-    }
+    const card = buildActionResolvedCard(params);
+    return this.updateCard(params.messageId, card);
   }
 
   /**
