@@ -1,6 +1,6 @@
 import type * as finch from 'finch';
 import type { FeishuManager, CardSessionHandle } from '../feishu/manager.js';
-import type { InboundMessageContext } from '../types.js';
+import type { InboundMessageContext, CardActionContext } from '../types.js';
 
 interface StreamState {
   chatId: string;
@@ -10,17 +10,28 @@ interface StreamState {
   patchTimer: NodeJS.Timeout | null;
 }
 
+interface PendingConfirmation {
+  actionId: string;
+  chatId: string;
+  title: string;
+  content: string;
+  resolve: (decision: 'yes' | 'no') => void;
+}
+
 export class BridgeManager {
   // 保存活跃 Turn 的流式输出状态: key 为 turnId
   private activeStreams = new Map<string, StreamState>();
   // 会话映射：chatId -> sessionId
   private chatSessions = new Map<string, string>();
+  // 等待用户点击确认的卡片：actionId -> PendingConfirmation
+  private pendingConfirmations = new Map<string, PendingConfirmation>();
 
   constructor(
     private readonly ctx: finch.MiniToolContext,
     private readonly feishu: FeishuManager
   ) {
     this.setupEventListeners();
+    this.setupCardActionListeners();
   }
 
   /**
@@ -45,7 +56,7 @@ export class BridgeManager {
 
       let cardHandle: CardSessionHandle | null = null;
       if (isAutoReply) {
-        // 创建飞书原生流式卡片（不含人工伪造字符，交给飞书客户端原生呈现打字机状态）
+        // 创建飞书原生流式卡片
         cardHandle = await this.feishu.createStreamingCard(msg.chatId);
       }
 
@@ -72,6 +83,105 @@ export class BridgeManager {
     } catch (err) {
       this.ctx.logger.error('Failed to handle inbound message into Finch session:', err);
     }
+  }
+
+  /**
+   * 向飞书发送授权/操作确认卡片（带 Yes/No 按钮），并返回一个 Promise 等待用户点击决策
+   */
+  public async askConfirmation(params: {
+    chatId: string;
+    title: string;
+    content: string;
+    yesLabel?: string;
+    noLabel?: string;
+    timeoutMs?: number;
+  }): Promise<{ decision: 'yes' | 'no' | 'timeout'; operatorName?: string }> {
+    const actionId = `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const messageId = await this.feishu.sendConfirmCard({
+      chatId: params.chatId,
+      actionId,
+      title: params.title,
+      content: params.content,
+      yesLabel: params.yesLabel,
+      noLabel: params.noLabel
+    });
+
+    if (!messageId) {
+      return { decision: 'no' };
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(async () => {
+        if (this.pendingConfirmations.has(actionId)) {
+          this.pendingConfirmations.delete(actionId);
+          // 超时锁定卡片
+          await this.feishu.updateCardToResolved({
+            messageId,
+            title: params.title,
+            content: params.content,
+            decision: 'no',
+            operatorName: '操作超时自动取消'
+          });
+          resolve({ decision: 'timeout' });
+        }
+      }, params.timeoutMs ?? 5 * 60 * 1000); // 默认 5 分钟超时
+
+      this.pendingConfirmations.set(actionId, {
+        actionId,
+        chatId: params.chatId,
+        title: params.title,
+        content: params.content,
+        resolve: (decision) => {
+          clearTimeout(timer);
+          resolve({ decision });
+        }
+      });
+    });
+  }
+
+  /**
+   * 监听来自飞书的卡片按钮点击回调 (card.action.trigger)
+   */
+  private setupCardActionListeners(): void {
+    this.feishu.onCardAction(async (actionEvt: CardActionContext) => {
+      this.ctx.logger.info('Received Feishu card action click:', actionEvt);
+
+      const actionId = actionEvt.actionId;
+      const decision = (actionEvt.decision === 'yes' ? 'yes' : 'no') as 'yes' | 'no';
+
+      if (actionId && this.pendingConfirmations.has(actionId)) {
+        const pending = this.pendingConfirmations.get(actionId)!;
+        this.pendingConfirmations.delete(actionId);
+
+        // 1. 就地把卡片更新为已完成状态（消除按钮，提示已被处理）
+        await this.feishu.updateCardToResolved({
+          messageId: actionEvt.messageId,
+          title: pending.title,
+          content: pending.content,
+          decision,
+          operatorName: actionEvt.operatorName || '飞书用户'
+        });
+
+        // 2. 解除 Promise 等待，通知业务逻辑
+        pending.resolve(decision);
+
+        // 3. 同时给对应的 Finch Session 投递一条状态更新通知
+        const sessionId = this.chatSessions.get(actionEvt.chatId);
+        if (sessionId) {
+          void this.ctx.sessions.send(sessionId, {
+            text: `[系统消息] 飞书用户 ${actionEvt.operatorName || '成员'} 针对「${pending.title}」做出了授权决策：【${decision === 'yes' ? '允许/同意' : '拒绝'}】。`,
+            idempotencyKey: `decision_${actionId}_${Date.now()}`
+          });
+        }
+      }
+
+      return {
+        toast: {
+          type: decision === 'yes' ? 'success' : 'warning',
+          content: decision === 'yes' ? '已确认允许' : '已取消/拒绝'
+        }
+      };
+    });
   }
 
   /**

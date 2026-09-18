@@ -1,7 +1,12 @@
 import type * as finch from 'finch';
 import * as lark from '@larksuiteoapi/node-sdk';
-import type { FeishuCredentials, InboundMessageContext } from '../types.js';
-import { buildCardkitStreamingCard, DEFAULT_ELEMENT_ID } from './card.js';
+import type { FeishuCredentials, InboundMessageContext, CardActionContext } from '../types.js';
+import {
+  buildCardkitStreamingCard,
+  buildActionConfirmCard,
+  buildActionResolvedCard,
+  DEFAULT_ELEMENT_ID
+} from './card.js';
 
 export interface CardSessionHandle {
   cardId: string;
@@ -14,11 +19,16 @@ export class FeishuManager {
   private wsClient: lark.WSClient | null = null;
   private isConnecting = false;
   private onMessageCallback: ((msg: InboundMessageContext) => Promise<void>) | null = null;
+  private onCardActionCallback: ((action: CardActionContext) => Promise<any>) | null = null;
 
   constructor(private readonly ctx: finch.MiniToolContext) {}
 
   public onMessage(cb: (msg: InboundMessageContext) => Promise<void>) {
     this.onMessageCallback = cb;
+  }
+
+  public onCardAction(cb: (action: CardActionContext) => Promise<any>) {
+    this.onCardActionCallback = cb;
   }
 
   public async getCredentials(): Promise<FeishuCredentials | null> {
@@ -93,7 +103,7 @@ export class FeishuManager {
         verificationToken: creds.verificationToken
       });
 
-      // 注册接收消息事件
+      // 1. 注册接收普通消息事件
       eventDispatcher.register({
         'im.message.receive_v1': async (data: any) => {
           try {
@@ -137,6 +147,50 @@ export class FeishuManager {
           } catch (err) {
             this.ctx.logger.error('Error handling feishu inbound message:', err);
           }
+        },
+
+        // 2. 注册卡片交互动作事件 (card.action.trigger) - 监听用户在飞书点击按钮的回调
+        'card.action.trigger': async (data: any) => {
+          try {
+            const messageId = data.context?.open_message_id || data.open_message_id;
+            const chatId = data.context?.open_chat_id || data.open_chat_id;
+            const operatorOpenId = data.operator?.open_id;
+            const operatorUserId = data.operator?.user_id;
+            const actionVal = data.action?.value;
+
+            let actionId: string | undefined;
+            let decision: 'yes' | 'no' | string | undefined;
+
+            if (typeof actionVal === 'object' && actionVal !== null) {
+              actionId = actionVal.actionId;
+              decision = actionVal.decision;
+            } else if (typeof actionVal === 'string') {
+              try {
+                const parsed = JSON.parse(actionVal);
+                actionId = parsed.actionId;
+                decision = parsed.decision;
+              } catch {
+                decision = actionVal;
+              }
+            }
+
+            if (this.onCardActionCallback) {
+              const res = await this.onCardActionCallback({
+                messageId,
+                chatId,
+                operatorOpenId,
+                operatorUserId,
+                operatorName: data.operator?.name,
+                actionId,
+                decision,
+                rawValue: actionVal
+              });
+              return res || {};
+            }
+          } catch (err) {
+            this.ctx.logger.error('Error handling card.action.trigger:', err);
+          }
+          return {};
         }
       });
 
@@ -171,6 +225,67 @@ export class FeishuManager {
       this.wsClient = null;
     }
     this.client = null;
+  }
+
+  /**
+   * 发送带 Yes / No 按钮的交互式确认卡片
+   */
+  public async sendConfirmCard(params: {
+    chatId: string;
+    actionId: string;
+    title: string;
+    content: string;
+    yesLabel?: string;
+    noLabel?: string;
+  }): Promise<string | null> {
+    if (!this.client) return null;
+
+    try {
+      const card = buildActionConfirmCard(params);
+      const res = await this.client.im.message.create({
+        params: {
+          receive_id_type: 'chat_id'
+        },
+        data: {
+          receive_id: params.chatId,
+          msg_type: 'interactive',
+          content: JSON.stringify(card)
+        }
+      });
+      return res?.data?.message_id || null;
+    } catch (err) {
+      this.ctx.logger.error('Failed to send confirm card to Feishu:', err);
+      return null;
+    }
+  }
+
+  /**
+   * 将已点击的交互卡片就地更新为结果状态卡片（防止重复点击，并清晰提示谁在何时点击了授权）
+   */
+  public async updateCardToResolved(params: {
+    messageId: string;
+    title: string;
+    content: string;
+    decision: 'yes' | 'no';
+    operatorName?: string;
+  }): Promise<boolean> {
+    if (!this.client) return false;
+
+    try {
+      const card = buildActionResolvedCard(params);
+      await this.client.im.message.patch({
+        path: {
+          message_id: params.messageId
+        },
+        data: {
+          content: JSON.stringify(card)
+        }
+      });
+      return true;
+    } catch (err) {
+      this.ctx.logger.error('Failed to update card to resolved state:', err);
+      return false;
+    }
   }
 
   /**

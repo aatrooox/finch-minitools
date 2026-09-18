@@ -16,6 +16,17 @@ export interface InboundMessageContext {
   parentId?: string;
 }
 
+export interface CardActionContext {
+  messageId: string;
+  chatId: string;
+  operatorOpenId: string;
+  operatorUserId?: string;
+  operatorName?: string;
+  actionId?: string;
+  decision?: 'yes' | 'no' | string;
+  rawValue?: any;
+}
+
 export interface OutboundStreamTarget {
   chatId: string;
   replyToMessageId?: string;

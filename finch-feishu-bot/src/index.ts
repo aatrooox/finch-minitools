@@ -21,6 +21,77 @@ export async function activate(ctx: finch.MiniToolContext) {
     }
   });
 
+  // 注册供 Agent 调用的工具：向飞书发送确认卡片以收集 Yes/No 授权
+  ctx.tools.register({
+    name: 'feishu_ask_confirmation',
+    title: '向飞书发送授权确认卡片',
+    description: '向指定的飞书群聊或单聊发送包含「是/授权」和「否/拒绝」按钮的交互卡片，并实时等待用户点击决策，返回授权结果。',
+    defaultEnabled: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chatId: {
+          type: 'string',
+          description: '飞书 chat_id（群聊或私聊会话 ID）'
+        },
+        title: {
+          type: 'string',
+          description: '卡片标题，例如「敏感操作授权确认」'
+        },
+        content: {
+          type: 'string',
+          description: '确认内容描述，支持完整 Markdown 语法'
+        },
+        yesLabel: {
+          type: 'string',
+          description: '确认/同意按钮文字，默认「是 / 允许」'
+        },
+        noLabel: {
+          type: 'string',
+          description: '拒绝/取消按钮文字，默认「否 / 拒绝」'
+        },
+        timeoutSeconds: {
+          type: 'number',
+          description: '等待用户点击的超时时间（秒），默认 300 秒（5分钟）'
+        }
+      },
+      required: ['chatId', 'title', 'content']
+    },
+    async execute(params: any) {
+      const { chatId, title, content, yesLabel, noLabel, timeoutSeconds } = params;
+      ctx.logger.info('Agent invoking feishu_ask_confirmation:', params);
+
+      const result = await bridge.askConfirmation({
+        chatId,
+        title,
+        content,
+        yesLabel,
+        noLabel,
+        timeoutMs: (timeoutSeconds || 300) * 1000
+      });
+
+      const message = result.decision === 'yes'
+        ? `用户已允许授权 (操作人: ${result.operatorName || '未知'})`
+        : result.decision === 'timeout'
+        ? '等待用户确认超时，操作已取消'
+        : `用户已拒绝授权 (操作人: ${result.operatorName || '未知'})`;
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              decision: result.decision,
+              operatorName: result.operatorName,
+              granted: result.decision === 'yes',
+              message
+            }, null, 2)
+          }
+        ]
+      };
+    }
+  });
+
   // 注册统一设置菜单（在收件箱顶栏以及工具箱卡片上展示）
   const menuHandle = ctx.settingsMenu.register({
     async getMenu() {
