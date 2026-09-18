@@ -1,6 +1,7 @@
 import type * as finch from 'finch';
 import { FeishuManager } from './feishu/manager.js';
 import { BridgeManager } from './finch/bridge.js';
+import { buildSystemNoticeCard } from './feishu/card.js';
 
 const FEISHU_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <path d="M22 2L11 13" />
@@ -115,6 +116,65 @@ export async function activate(ctx: finch.MiniToolContext) {
               operatorName: result.operatorName,
               granted: result.decision === 'yes',
               message
+            }, null, 2)
+          }
+        ]
+      };
+    }
+  });
+
+  // 注册供 Agent 调用的工具：开启飞书新对话
+  ctx.tools.register({
+    name: 'feishu_new',
+    title: '开启飞书新对话',
+    description: '为当前飞书会话重置上下文并开启全新的 Finch Session。当用户表达想要换个话题、重新开始、清空历史或开启新对话时调用。原会话在 Finch 中保留归档。',
+    defaultEnabled: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: '新会话的主题或标题，可选'
+        }
+      }
+    },
+    async execute(params: any) {
+      const chatId = bridge.getFixedChatId();
+      if (!chatId) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: '未检测到绑定的飞书会话' }) }],
+          isError: true
+        };
+      }
+
+      const newSessionId = await bridge.createNewSession(chatId, params?.title);
+
+      const summaryText = [
+        '✨ **已为您开启全新对话！**',
+        '',
+        `> 🆔 **新会话 ID**: \`${newSessionId}\``,
+        params?.title ? `> 🏷️ **主题**: ${params.title}` : '> 🏷️ **主题**: 默认飞书对话',
+        '',
+        '_💡 上一个会话已在 Finch 中自动归档，之前的工程记忆已持久化。现在您可以轻装上阵，开始全新探讨！_'
+      ].join('\n');
+
+      await feishu.sendCard(
+        chatId,
+        buildSystemNoticeCard({
+          title: '✨ 会话已重置并开启新对话',
+          content: summaryText,
+          template: 'turquoise'
+        })
+      );
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              success: true,
+              newSessionId,
+              message: '已成功为用户开启全新会话并下发了通知卡片'
             }, null, 2)
           }
         ]

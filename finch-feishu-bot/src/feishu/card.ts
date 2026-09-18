@@ -426,3 +426,33 @@ export function buildFollowupStreamingCard(params: {
   };
 }
 
+/**
+ * 构造轻量系统通知卡片 (用于快捷指令反馈、系统提示等)
+ */
+export function buildSystemNoticeCard(params: {
+  title: string;
+  content: string;
+  template?: 'blue' | 'turquoise' | 'green' | 'yellow' | 'red' | 'grey';
+}) {
+  const { title, content, template = 'turquoise' } = params;
+  return {
+    config: {
+      wide_screen_mode: true
+    },
+    header: {
+      template,
+      title: {
+        tag: 'plain_text',
+        content: title
+      }
+    },
+    elements: [
+      {
+        tag: 'markdown',
+        content
+      }
+    ]
+  };
+}
+
+

@@ -8,8 +8,10 @@ import {
   buildPermissionWaitResolvedCard,
   buildFollowupStreamingCard,
   buildActionConfirmCard,
-  buildActionResolvedCard
+  buildActionResolvedCard,
+  buildSystemNoticeCard
 } from '../feishu/card.js';
+import { CommandRegistry } from '../commands/registry.js';
 
 interface StreamState {
   chatId: string;
@@ -66,11 +68,14 @@ export class BridgeManager {
   // 等待用户交互（提问/授权）的状态缓存
   private pendingWaitsByChat = new Map<string, PendingWaitState>();
   private pendingWaitsByRequest = new Map<string, PendingWaitState>();
+  // 快捷指令注册中心
+  private commandRegistry: CommandRegistry;
 
   constructor(
     private readonly ctx: finch.MiniToolContext,
     private readonly feishu: FeishuManager
   ) {
+    this.commandRegistry = new CommandRegistry(this.ctx, this, this.feishu);
     this.setupEventListeners();
     this.setupCardActionListeners();
     void this.initFixedChatId();
@@ -89,6 +94,34 @@ export class BridgeManager {
 
   public getFixedChatId(): string {
     return this.fixedChatId;
+  }
+
+  public getCommandRegistry(): CommandRegistry {
+    return this.commandRegistry;
+  }
+
+  /**
+   * 为指定的飞书 chatId 重置并开启全新的 Finch Session
+   */
+  public async createNewSession(chatId: string, customTitle?: string): Promise<string> {
+    const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    const title = customTitle?.trim() || `飞书对话 (${timeStr})`;
+    const sessionInfo = await this.ctx.sessions.create({
+      containerId: 'feishu',
+      title,
+      activity: 'interactive',
+      permissionMode: 'acceptCalls'
+    });
+
+    const sessionId = sessionInfo.sessionId;
+    this.chatSessions.set(chatId, sessionId);
+    this.sessionChats.set(sessionId, chatId);
+    const storageKey = `${STORAGE_SESSION_PREFIX}${chatId}`;
+    await this.ctx.storage.set(storageKey, sessionId);
+    await this.ctx.storage.set('feishu:last_active_chat', chatId);
+
+    this.ctx.logger.info(`Created new fresh session ${sessionId} for chat ${chatId}, title: ${title}`);
+    return sessionId;
   }
 
   /**
@@ -207,6 +240,13 @@ export class BridgeManager {
     const isAutoReply = this.ctx.settings.get<boolean>('autoReply') ?? true;
 
     try {
+      // 0. 优先检查并分发快捷指令（如 /new, /reset, /help 等）
+      // 命中快捷指令时直接执行并响应卡片，0 毫秒等待、0 Token 消耗，不唤醒大模型！
+      const commandHandled = await this.commandRegistry.dispatch(msg);
+      if (commandHandled) {
+        return;
+      }
+
       // 1. 优先检查当前 Chat 是否有等待中的提问或授权交互（turn.waiting）
       const pending = this.pendingWaitsByChat.get(msg.chatId);
       if (pending) {
