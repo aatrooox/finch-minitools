@@ -1,0 +1,27 @@
+{
+  "name": "飞书机器人",
+  "description": "通过长连接（WebSocket）将飞书机器人接入 Finch，支持流式卡片消息与专属飞书收件箱。",
+  "sessionContainers": {
+    "feishu": {
+      "title": "飞书收件箱",
+      "description": "由 Finch 接管的飞书对话"
+    }
+  },
+  "agentProfiles": {
+    "feishu-assistant": {
+      "name": "飞书消息助理",
+      "description": "负责处理来自飞书的对话并以结构化卡片与 Markdown 回复"
+    }
+  },
+  "settingsMenu": {
+    "tooltip": "配置飞书机器人凭据与连接"
+  },
+  "settings": {
+    "fields": {
+      "autoReply": {
+        "label": "自动回复",
+        "description": "开启后将生成的回答流式推回飞书卡片；关闭时仅在 Finch 会话内记录。"
+      }
+    }
+  }
+}

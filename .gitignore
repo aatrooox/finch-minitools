@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+
+# OS and Editor
+.DS_Store
+.vscode/
+.idea/
+*.swp

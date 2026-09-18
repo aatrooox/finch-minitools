@@ -1,0 +1,70 @@
+{
+  "manifestVersion": 1,
+  "id": "finch-feishu-bot",
+  "name": "Feishu Bot",
+  "description": "Connect Feishu Bot to Finch through long-connection (WebSocket), supporting streaming cards and dedicated inbox sessions.",
+  "main": "dist/index.js",
+  "activationEvents": [
+    "onStartup"
+  ],
+  "miniToolType": "local",
+  "categories": [
+    "productivity"
+  ],
+  "contributes": {
+    "tools": true,
+    "iconPacks": [
+      {
+        "id": "feishu",
+        "label": "Feishu Icons"
+      }
+    ],
+    "icons": {
+      "feishu": {
+        "svg": "./icons/feishu.svg",
+        "description": "Feishu App Icon"
+      }
+    },
+    "sessionContainers": [
+      {
+        "id": "feishu",
+        "icon": "ext:feishu",
+        "title": "Feishu Inbox",
+        "description": "Feishu conversations handled by Finch",
+        "agentProfile": "feishu-assistant",
+        "mode": "inbox"
+      }
+    ],
+    "agentProfiles": [
+      {
+        "id": "feishu-assistant",
+        "name": "Feishu Message Steward",
+        "description": "A steward for handling Feishu messages",
+        "prompt": "You are the user's Feishu message steward. Handle messages received through Feishu and format replies cleanly with Markdown (lists, code blocks, bold text). Keep replies focused, helpful, and polite."
+      }
+    ],
+    "settingsMenu": {
+      "icon": "settings",
+      "tooltip": "Configure Feishu Bot credentials and connection"
+    }
+  },
+  "settings": {
+    "fields": [
+      {
+        "key": "autoReply",
+        "type": "boolean",
+        "label": "Auto reply",
+        "description": "When on, replies are streamed back to Feishu as rich cards. When off, messages only reach the Session.",
+        "default": true
+      }
+    ]
+  },
+  "permissions": {
+    "network": true,
+    "sessions": true,
+    "sessionInteractions": true,
+    "secrets": [
+      "feishu.*"
+    ]
+  }
+}

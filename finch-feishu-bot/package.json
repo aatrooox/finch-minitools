@@ -1,0 +1,29 @@
+{
+  "name": "finch-feishu-bot",
+  "version": "0.1.0",
+  "description": "Connect Feishu Bot to Finch with streaming message cards and inbox sessions.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=es2022 --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=dist/index.js",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.45.0"
+  },
+  "devDependencies": {
+    "@finchtoys/minitool-api": "0.2.11",
+    "@types/node": "^22.13.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.3"
+  },
+  "files": [
+    "dist/",
+    "finch.json",
+    "i18n/",
+    "icons/",
+    "icon.png",
+    "README.md"
+  ]
+}

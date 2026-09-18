@@ -1,0 +1,27 @@
+{
+  "name": "Feishu Bot",
+  "description": "Connect Feishu Bot to Finch through long-connection (WebSocket), supporting streaming cards and dedicated inbox sessions.",
+  "sessionContainers": {
+    "feishu": {
+      "title": "Feishu Inbox",
+      "description": "Feishu conversations handled by Finch"
+    }
+  },
+  "agentProfiles": {
+    "feishu-assistant": {
+      "name": "Feishu Message Steward",
+      "description": "A steward for handling Feishu messages"
+    }
+  },
+  "settingsMenu": {
+    "tooltip": "Configure Feishu Bot credentials and connection"
+  },
+  "settings": {
+    "fields": {
+      "autoReply": {
+        "label": "Auto reply",
+        "description": "When on, replies are streamed back to Feishu as rich cards. When off, messages only reach the Session."
+      }
+    }
+  }
+}
