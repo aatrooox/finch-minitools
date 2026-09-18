@@ -1,10 +1,10 @@
 import type * as finch from 'finch';
-import type { FeishuManager } from '../feishu/manager.js';
+import type { FeishuManager, CardSessionHandle } from '../feishu/manager.js';
 import type { InboundMessageContext } from '../types.js';
 
 interface StreamState {
   chatId: string;
-  cardMessageId: string | null;
+  cardHandle: CardSessionHandle | null;
   textBuffer: string;
   lastPatchTime: number;
   patchTimer: NodeJS.Timeout | null;
@@ -43,10 +43,10 @@ export class BridgeManager {
         this.chatSessions.set(msg.chatId, sessionId);
       }
 
-      let cardMessageId: string | null = null;
+      let cardHandle: CardSessionHandle | null = null;
       if (isAutoReply) {
-        // 先向飞书发送一张初始的“正在思考中”卡片
-        cardMessageId = await this.feishu.sendInitialCard(msg.chatId, msg.messageId);
+        // 创建飞书原生流式卡片（不含人工伪造字符，交给飞书客户端原生呈现打字机状态）
+        cardHandle = await this.feishu.createStreamingCard(msg.chatId);
       }
 
       // 将用户消息投递到 Finch 会话
@@ -63,7 +63,7 @@ export class BridgeManager {
       if (isAutoReply) {
         this.activeStreams.set(receipt.turnId, {
           chatId: msg.chatId,
-          cardMessageId,
+          cardHandle,
           textBuffer: '',
           lastPatchTime: Date.now(),
           patchTimer: null
@@ -92,21 +92,21 @@ export class BridgeManager {
             stream.textBuffer += event.delta;
           }
 
-          // 优化流式更新频率：从原本呆板的 800ms 降至更敏捷的 150ms，既不超频，又能享受丝滑的打字机流式效果
+          // 节流推送至飞书卡片（100ms 刷新率，飞书原生打字机动画将平滑展开）
           const now = Date.now();
-          if (now - stream.lastPatchTime > 150) {
+          if (now - stream.lastPatchTime > 100) {
             stream.lastPatchTime = now;
-            if (stream.cardMessageId) {
-              void this.feishu.updateCard(stream.cardMessageId, stream.textBuffer, 'generating');
+            if (stream.cardHandle && stream.textBuffer) {
+              void this.feishu.updateStreamingContent(stream.cardHandle, stream.textBuffer);
             }
           } else if (!stream.patchTimer) {
             stream.patchTimer = setTimeout(() => {
               stream.patchTimer = null;
               stream.lastPatchTime = Date.now();
-              if (stream.cardMessageId) {
-                void this.feishu.updateCard(stream.cardMessageId, stream.textBuffer, 'generating');
+              if (stream.cardHandle && stream.textBuffer) {
+                void this.feishu.updateStreamingContent(stream.cardHandle, stream.textBuffer);
               }
-            }, 150);
+            }, 100);
           }
           break;
         }
@@ -117,10 +117,9 @@ export class BridgeManager {
             stream.patchTimer = null;
           }
 
-          // 最终结算：如果 message 里有完整正文则优先取完整正文
           const finalContent = event.message?.text || stream.textBuffer;
-          if (stream.cardMessageId) {
-            await this.feishu.updateCard(stream.cardMessageId, finalContent, 'completed');
+          if (stream.cardHandle) {
+            await this.feishu.finishStreaming(stream.cardHandle, finalContent);
           }
           this.activeStreams.delete(turnId);
           break;
@@ -132,9 +131,9 @@ export class BridgeManager {
             stream.patchTimer = null;
           }
 
-          const errorContent = (stream.textBuffer ? stream.textBuffer + '\n\n' : '') + `[生成中断或失败: ${event.error?.message || '未知错误'}]`;
-          if (stream.cardMessageId) {
-            await this.feishu.updateCard(stream.cardMessageId, errorContent, 'failed');
+          const errorContent = (stream.textBuffer ? stream.textBuffer + '\n\n' : '') + `> ⚠️ **生成中断或失败**: ${event.error?.message || '未知错误'}`;
+          if (stream.cardHandle) {
+            await this.feishu.finishStreaming(stream.cardHandle, errorContent);
           }
           this.activeStreams.delete(turnId);
           break;

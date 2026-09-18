@@ -1,30 +1,35 @@
-/**
- * 构造飞书卡片 JSON
- * 
- * 注意：飞书卡片有两种 markdown 渲染方式：
- * 1. 之前旧版: { tag: "div", text: { tag: "lark_md", content: ... } }
- *    - 这是飞书早期的轻量级行内富文本标签，只支持简单的加粗和超链接，不支持任何代码高亮、多级标题、有序列表等 Markdown 语法！导致看起来完全没有渲染。
- * 2. 飞书卡片全功能原生 Markdown 容器:
- *    { tag: "markdown", content: "..." }
- *    - 这是飞书官方专为大模型和文档设计的独立组件，原生完美支持：代码高亮 (```语言)、标题 (#/##/###)、加粗斜体、引用、分割线、表格、无序/有序列表！
- */
-export function buildStreamingCard(markdownContent: string, status: 'generating' | 'completed' | 'failed' = 'generating') {
-  // 去除冗余厚重的卡片外壳，只保留轻量流式打字效果
-  // 如果生成中，在末尾附带一个闪烁/打字指示符
-  const cursor = status === 'generating' ? ' ▍' : '';
-  const renderedText = (markdownContent || '正在思考中...') + cursor;
+export const DEFAULT_ELEMENT_ID = 'stream_content_md';
 
+/**
+ * 飞书卡片 2.0 (Schema 2.0)
+ * 官方标准流式 Markdown 卡片结构
+ * 
+ * 优势：
+ * 1. 客户端原生支持 streaming_mode: true，自动附带原生流式打字机动画和优雅的光标效果，不再需要开发者手拼黑块光标！
+ * 2. 属于独立的全功能 Markdown 容器，完美原生渲染多级标题（#、##、###）、代码块高亮、表格、引用等！
+ */
+export function buildCardkitStreamingCard(initialText: string = '') {
   return {
+    schema: '2.0',
     config: {
-      wide_screen_mode: true,
-      update_multi: true
-    },
-    // 不再使用笨重的 header 大横幅，直接像普通消息一样展示正文
-    elements: [
-      {
-        tag: 'markdown',
-        content: renderedText
+      streaming_mode: true,
+      summary: {
+        content: '正在生成回答...'
+      },
+      streaming_config: {
+        print_frequency_ms: { default: 50 },
+        print_step: { default: 1 },
+        print_strategy: 'fast'
       }
-    ]
+    },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          element_id: DEFAULT_ELEMENT_ID,
+          content: initialText
+        }
+      ]
+    }
   };
 }

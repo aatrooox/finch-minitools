@@ -1,7 +1,13 @@
 import type * as finch from 'finch';
 import * as lark from '@larksuiteoapi/node-sdk';
 import type { FeishuCredentials, InboundMessageContext } from '../types.js';
-import { buildStreamingCard } from './card.js';
+import { buildCardkitStreamingCard, DEFAULT_ELEMENT_ID } from './card.js';
+
+export interface CardSessionHandle {
+  cardId: string;
+  messageId: string;
+  sequence: number;
+}
 
 export class FeishuManager {
   private client: lark.Client | null = null;
@@ -168,51 +174,113 @@ export class FeishuManager {
   }
 
   /**
-   * 发送初始回复卡片
+   * 创建飞书原生流式卡片并发送到会话
    */
-  public async sendInitialCard(chatId: string, _replyToMessageId?: string): Promise<string | null> {
+  public async createStreamingCard(chatId: string): Promise<CardSessionHandle | null> {
     if (!this.client) return null;
 
     try {
-      const card = buildStreamingCard('正在思考中...', 'generating');
-      const res = await this.client.im.message.create({
+      // 1. 创建流式卡片实体，获得 card_id
+      const initialCard = buildCardkitStreamingCard('');
+      const cardRes = await this.client.cardkit.v1.card.create({
+        data: {
+          type: 'card_json',
+          data: JSON.stringify(initialCard)
+        }
+      });
+
+      const cardId = cardRes?.data?.card_id;
+      if (!cardId) {
+        throw new Error('cardkit.v1.card.create returned no card_id');
+      }
+
+      // 2. 将创建好的卡片引用发送到群聊/单聊
+      const msgRes = await this.client.im.message.create({
         params: {
           receive_id_type: 'chat_id'
         },
         data: {
           receive_id: chatId,
           msg_type: 'interactive',
-          content: JSON.stringify(card)
+          content: JSON.stringify({
+            type: 'card',
+            data: {
+              card_id: cardId
+            }
+          })
         }
       });
 
-      return res?.data?.message_id || null;
+      const messageId = msgRes?.data?.message_id;
+      if (!messageId) {
+        throw new Error('im.message.create returned no message_id');
+      }
+
+      return {
+        cardId,
+        messageId,
+        sequence: 1
+      };
     } catch (err) {
-      this.ctx.logger.error('Failed to send initial card to Feishu:', err);
+      this.ctx.logger.error('Failed to createStreamingCard:', err);
       return null;
     }
   }
 
   /**
-   * 更新卡片内容（流式打字效果）
+   * 原生流式更新卡片元素内容（飞书客户端原生打字机动画 + 原生光标）
    */
-  public async updateCard(messageId: string, content: string, status: 'generating' | 'completed' | 'failed' = 'generating'): Promise<boolean> {
+  public async updateStreamingContent(handle: CardSessionHandle, content: string): Promise<boolean> {
     if (!this.client) return false;
 
     try {
-      const card = buildStreamingCard(content, status);
-      await this.client.im.message.patch({
+      handle.sequence += 1;
+      const seq = handle.sequence;
+      await this.client.cardkit.v1.cardElement.content({
         path: {
-          message_id: messageId
+          card_id: handle.cardId,
+          element_id: DEFAULT_ELEMENT_ID
         },
         data: {
-          content: JSON.stringify(card)
+          content,
+          sequence: seq,
+          uuid: `c_${handle.cardId}_${seq}`
         }
       });
       return true;
     } catch (err: any) {
-      this.ctx.logger.debug('Failed to patch feishu card message:', err?.message || err);
+      this.ctx.logger.debug('Failed to updateStreamingContent:', err?.message || err);
       return false;
+    }
+  }
+
+  /**
+   * 结束流式输出（关闭 streaming_mode，锁定卡片，消除原生光标）
+   */
+  public async finishStreaming(handle: CardSessionHandle, finalContent?: string): Promise<void> {
+    if (!this.client) return;
+
+    try {
+      if (finalContent) {
+        await this.updateStreamingContent(handle, finalContent);
+      }
+
+      handle.sequence += 1;
+      const seq = handle.sequence;
+      const config = { streaming_mode: false };
+
+      await this.client.cardkit.v1.card.settings({
+        path: {
+          card_id: handle.cardId
+        },
+        data: {
+          settings: JSON.stringify({ config }),
+          sequence: seq,
+          uuid: `s_${handle.cardId}_${seq}`
+        }
+      });
+    } catch (err: any) {
+      this.ctx.logger.debug('Failed to finishStreaming card:', err?.message || err);
     }
   }
 }
