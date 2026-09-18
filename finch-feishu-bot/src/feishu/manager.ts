@@ -194,11 +194,21 @@ export class FeishuManager {
         // 2. 注册卡片交互动作事件 (card.action.trigger) - 监听用户在飞书点击按钮的回调
         'card.action.trigger': async (data: any) => {
           try {
-            const messageId = data.context?.open_message_id || data.open_message_id;
-            const chatId = data.context?.open_chat_id || data.open_chat_id;
-            const operatorOpenId = data.operator?.open_id;
-            const operatorUserId = data.operator?.user_id;
-            const actionVal = data.action?.value;
+            this.ctx.logger.info('card.action.trigger received data:', JSON.stringify(data));
+            const messageId = data.context?.open_message_id
+              || data.open_message_id
+              || data.message_id
+              || data.event?.context?.open_message_id
+              || data.event?.open_message_id;
+            const chatId = data.context?.open_chat_id
+              || data.open_chat_id
+              || data.chat_id
+              || data.event?.context?.open_chat_id
+              || data.event?.open_chat_id;
+            const operatorOpenId = data.operator?.open_id || data.event?.operator?.open_id;
+            const operatorUserId = data.operator?.user_id || data.event?.operator?.user_id;
+            const operatorName = data.operator?.name || data.event?.operator?.name;
+            const actionVal = data.action?.value || data.event?.action?.value;
 
             let actionId: string | undefined;
             let decision: 'yes' | 'no' | string | undefined;
@@ -222,7 +232,7 @@ export class FeishuManager {
                 chatId,
                 operatorOpenId,
                 operatorUserId,
-                operatorName: data.operator?.name,
+                operatorName,
                 actionId,
                 decision,
                 rawValue: actionVal

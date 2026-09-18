@@ -25,9 +25,11 @@ interface StreamState {
 interface PendingConfirmation {
   actionId: string;
   chatId: string;
+  messageId?: string;
+  turnId?: string;
   title: string;
   content: string;
-  resolve: (decision: 'yes' | 'no') => void;
+  resolve: (res: { decision: 'yes' | 'no' | 'timeout'; operatorName?: string }) => void;
 }
 
 interface PendingWaitState {
@@ -329,6 +331,20 @@ export class BridgeManager {
     noLabel?: string;
     timeoutMs?: number;
   }): Promise<{ decision: 'yes' | 'no' | 'timeout'; operatorName?: string }> {
+    // 查找当前会话正在运行的活跃 turnId
+    let currentTurnId: string | undefined;
+    for (const [tId, s] of this.activeStreams.entries()) {
+      if (s.chatId === params.chatId) {
+        currentTurnId = tId;
+        // 如果上方已经有流式输出，将上方卡片封板结算，避免悬挂
+        if (s.cardHandle && s.textBuffer.trim()) {
+          void this.feishu.finishStreaming(s.cardHandle, s.textBuffer);
+          s.cardHandle = null;
+        }
+        break;
+      }
+    }
+
     const actionId = `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const messageId = await this.feishu.sendConfirmCard({
       chatId: params.chatId,
@@ -362,11 +378,13 @@ export class BridgeManager {
       this.pendingConfirmations.set(actionId, {
         actionId,
         chatId: params.chatId,
+        messageId,
+        turnId: currentTurnId,
         title: params.title,
         content: params.content,
-        resolve: (decision) => {
+        resolve: (res) => {
           clearTimeout(timer);
-          resolve({ decision });
+          resolve(res);
         }
       });
     });
@@ -404,19 +422,21 @@ export class BridgeManager {
               const metaHeader = '❓ 选项确认';
               const metaSummary = `> ❓ **${pending.cardData?.question || '提问'}**\n> **已选择**: 🎯 **${answer}**${who}`;
 
-              if (actionEvt.messageId) {
-                const waitingCard = buildFollowupStreamingCard({
-                  metaHeader,
-                  metaSummary,
-                  body: '',
-                  isCompleted: false
-                });
-                await this.feishu.updateCard(actionEvt.messageId, waitingCard);
+              const targetMessageId = actionEvt.messageId || pending.cardMessageId;
+              const waitingCard = buildFollowupStreamingCard({
+                metaHeader,
+                metaSummary,
+                body: '',
+                isCompleted: false
+              });
+
+              if (targetMessageId) {
+                await this.feishu.updateCard(targetMessageId, waitingCard);
 
                 // 将后续流式输出接力挂接到该卡片上
                 this.activeStreams.set(pending.turnId, {
                   chatId: pending.chatId,
-                  targetMessageId: actionEvt.messageId,
+                  targetMessageId,
                   metaHeader,
                   metaSummary,
                   textBuffer: '',
@@ -428,7 +448,8 @@ export class BridgeManager {
                 toast: {
                   type: 'success',
                   content: `已选择：${answer}`
-                }
+                },
+                card: waitingCard
               };
             }
           } catch (err) {
@@ -450,19 +471,21 @@ export class BridgeManager {
               const statusText = allow ? '✅ **已允许授权**' : '❌ **已拒绝请求**';
               const metaSummary = `> 🛡️ **工具**: \`${pending.cardData?.toolName || '操作'}\`\n> **授权状态**: ${statusText}${who}`;
 
-              if (actionEvt.messageId) {
-                const waitingCard = buildFollowupStreamingCard({
-                  metaHeader,
-                  metaSummary,
-                  body: '',
-                  isCompleted: false
-                });
-                await this.feishu.updateCard(actionEvt.messageId, waitingCard);
+              const targetMessageId = actionEvt.messageId || pending.cardMessageId;
+              const waitingCard = buildFollowupStreamingCard({
+                metaHeader,
+                metaSummary,
+                body: '',
+                isCompleted: false
+              });
+
+              if (targetMessageId) {
+                await this.feishu.updateCard(targetMessageId, waitingCard);
 
                 // 将后续流式输出接力挂接到该卡片上
                 this.activeStreams.set(pending.turnId, {
                   chatId: pending.chatId,
-                  targetMessageId: actionEvt.messageId,
+                  targetMessageId,
                   metaHeader,
                   metaSummary,
                   textBuffer: '',
@@ -474,7 +497,8 @@ export class BridgeManager {
                 toast: {
                   type: allow ? 'success' : 'warning',
                   content: allow ? '已允许授权' : '已拒绝请求'
-                }
+                },
+                card: waitingCard
               };
             }
           } catch (err) {
@@ -491,24 +515,51 @@ export class BridgeManager {
         const pending = this.pendingConfirmations.get(actionId)!;
         this.pendingConfirmations.delete(actionId);
 
-        // 就地把卡片更新为已完成状态
-        await this.feishu.updateCardToResolved({
-          messageId: actionEvt.messageId,
-          title: pending.title,
-          content: pending.content,
-          decision,
-          operatorName: actionEvt.operatorName || '飞书用户'
+        const targetMessageId = actionEvt.messageId || pending.messageId;
+        const who = actionEvt.operatorName ? ` (操作人: ${actionEvt.operatorName})` : '';
+        const metaHeader = '🛡️ 操作授权';
+        const statusText = decision === 'yes' ? '✅ **已允许授权**' : '❌ **已拒绝请求**';
+        const metaSummary = `> 🛡️ **${pending.title}**\n> ${pending.content}\n> **决策结果**: ${statusText}${who}`;
+
+        const waitingCard = buildFollowupStreamingCard({
+          metaHeader,
+          metaSummary,
+          body: '',
+          isCompleted: false
         });
 
-        pending.resolve(decision);
+        if (targetMessageId) {
+          // 就地把确认卡片更新为流式接力卡片，移除按钮并显示加载提示
+          await this.feishu.updateCard(targetMessageId, waitingCard);
 
-        const sessionId = this.chatSessions.get(actionEvt.chatId);
-        if (sessionId) {
-          void this.ctx.sessions.send(sessionId, {
-            text: `[系统消息] 飞书用户 ${actionEvt.operatorName || '成员'} 针对「${pending.title}」做出了授权决策：【${decision === 'yes' ? '允许/同意' : '拒绝'}】。`,
-            idempotencyKey: `decision_${actionId}_${Date.now()}`
-          });
+          // 将后续流式输出接力挂接到该卡片上
+          const activeTurnId = pending.turnId || Array.from(this.activeStreams.entries()).find(([_, s]) => s.chatId === pending.chatId)?.[0];
+          if (activeTurnId) {
+            this.activeStreams.set(activeTurnId, {
+              chatId: pending.chatId,
+              targetMessageId,
+              metaHeader,
+              metaSummary,
+              textBuffer: '',
+              lastPatchTime: Date.now(),
+              patchTimer: null
+            });
+          }
         }
+
+        // 结算工具调用的 Promise，使 Agent 继续生成结论
+        pending.resolve({
+          decision,
+          operatorName: actionEvt.operatorName
+        });
+
+        return {
+          toast: {
+            type: decision === 'yes' ? 'success' : 'warning',
+            content: decision === 'yes' ? '已确认允许' : '已取消/拒绝'
+          },
+          card: waitingCard
+        };
       }
 
       return {
