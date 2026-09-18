@@ -384,3 +384,45 @@ export function buildPermissionWaitResolvedCard(params: {
     ]
   };
 }
+
+/**
+ * 构造授权/选择后续流式卡片（将决策结果置顶，正文在下方动态更新）
+ */
+export function buildFollowupStreamingCard(params: {
+  metaHeader?: string;
+  metaSummary: string;
+  body: string;
+  isCompleted?: boolean;
+}) {
+  const { metaHeader, metaSummary, body, isCompleted } = params;
+
+  let displayBody = body ? body.trim() : '';
+  if (!displayBody && !isCompleted) {
+    displayBody = '_⏳ 正在执行并处理，请稍候..._';
+  }
+
+  const fullMarkdown = displayBody
+    ? `${metaSummary}\n\n---\n\n${displayBody}`
+    : metaSummary;
+
+  return {
+    config: {
+      wide_screen_mode: true,
+      update_multi: true
+    },
+    header: {
+      template: isCompleted ? 'turquoise' : 'blue',
+      title: {
+        tag: 'plain_text',
+        content: isCompleted ? '💬 执行与回答' : (metaHeader || '💬 正在处理')
+      }
+    },
+    elements: [
+      {
+        tag: 'markdown',
+        content: fullMarkdown
+      }
+    ]
+  };
+}
+

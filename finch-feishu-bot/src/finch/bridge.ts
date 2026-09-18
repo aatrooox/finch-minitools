@@ -5,12 +5,18 @@ import {
   buildQuestionCard,
   buildQuestionResolvedCard,
   buildPermissionWaitCard,
-  buildPermissionWaitResolvedCard
+  buildPermissionWaitResolvedCard,
+  buildFollowupStreamingCard
 } from '../feishu/card.js';
 
 interface StreamState {
   chatId: string;
-  cardHandle: CardSessionHandle | null;
+  // 原生 CardKit 2.0 流式卡片句柄（用于常规回答）
+  cardHandle?: CardSessionHandle | null;
+  // 就地接力卡片消息 ID（用于授权/选择后续流式输出）
+  targetMessageId?: string;
+  metaHeader?: string;
+  metaSummary?: string;
   textBuffer: string;
   lastPatchTime: number;
   patchTimer: NodeJS.Timeout | null;
@@ -36,6 +42,7 @@ interface PendingWaitState {
     header?: string;
     question?: string;
     toolName?: string;
+    toolTitle?: string;
   };
 }
 
@@ -189,14 +196,29 @@ export class BridgeManager {
                 this.pendingWaitsByChat.delete(msg.chatId);
                 this.pendingWaitsByRequest.delete(pending.requestId);
 
-                if (pending.cardMessageId && pending.cardData) {
-                  const resolvedCard = buildQuestionResolvedCard({
-                    header: pending.cardData.header || '已回答',
-                    question: pending.cardData.question || '',
-                    selectedAnswer: chosenAnswer,
-                    operatorName: msg.senderName || '飞书用户'
+                const who = msg.senderName ? ` (操作人: ${msg.senderName})` : '';
+                const metaHeader = '❓ 选项确认';
+                const metaSummary = `> ❓ **${pending.cardData?.question || '提问'}**\n> **已选择**: 🎯 **${chosenAnswer}**${who}`;
+
+                if (pending.cardMessageId) {
+                  const waitingCard = buildFollowupStreamingCard({
+                    metaHeader,
+                    metaSummary,
+                    body: '',
+                    isCompleted: false
                   });
-                  await this.feishu.updateCard(pending.cardMessageId, resolvedCard);
+                  await this.feishu.updateCard(pending.cardMessageId, waitingCard);
+
+                  // 将后续流式输出接力挂接到该卡片上
+                  this.activeStreams.set(pending.turnId, {
+                    chatId: pending.chatId,
+                    targetMessageId: pending.cardMessageId,
+                    metaHeader,
+                    metaSummary,
+                    textBuffer: '',
+                    lastPatchTime: Date.now(),
+                    patchTimer: null
+                  });
                 }
               } else {
                 this.ctx.logger.warn(`respondToWait question returned state: ${resp.state}`);
@@ -225,13 +247,30 @@ export class BridgeManager {
                 this.pendingWaitsByChat.delete(msg.chatId);
                 this.pendingWaitsByRequest.delete(pending.requestId);
 
-                if (pending.cardMessageId && pending.cardData) {
-                  const resolvedCard = buildPermissionWaitResolvedCard({
-                    toolName: pending.cardData.toolName || '工具',
-                    allow,
-                    operatorName: msg.senderName || '飞书用户'
+                const who = msg.senderName ? ` (操作人: ${msg.senderName})` : '';
+                const metaHeader = '🛡️ 操作授权';
+                const statusText = allow ? '✅ **已允许授权**' : '❌ **已拒绝请求**';
+                const metaSummary = `> 🛡️ **工具**: \`${pending.cardData?.toolName || '操作'}\`\n> **授权状态**: ${statusText}${who}`;
+
+                if (pending.cardMessageId) {
+                  const waitingCard = buildFollowupStreamingCard({
+                    metaHeader,
+                    metaSummary,
+                    body: '',
+                    isCompleted: false
                   });
-                  await this.feishu.updateCard(pending.cardMessageId, resolvedCard);
+                  await this.feishu.updateCard(pending.cardMessageId, waitingCard);
+
+                  // 将后续流式输出接力挂接到该卡片上
+                  this.activeStreams.set(pending.turnId, {
+                    chatId: pending.chatId,
+                    targetMessageId: pending.cardMessageId,
+                    metaHeader,
+                    metaSummary,
+                    textBuffer: '',
+                    lastPatchTime: Date.now(),
+                    patchTimer: null
+                  });
                 }
               } else {
                 this.ctx.logger.warn(`respondToWait permission returned state: ${resp.state}`);
@@ -252,12 +291,6 @@ export class BridgeManager {
 
       const sessionId = await this.getOrCreateSession(msg);
 
-      let cardHandle: CardSessionHandle | null = null;
-      if (isAutoReply) {
-        // 创建飞书原生流式卡片
-        cardHandle = await this.feishu.createStreamingCard(msg.chatId);
-      }
-
       // 将用户消息投递到 Finch 会话
       const receipt = await this.ctx.sessions.send(sessionId, {
         text: msg.text,
@@ -270,9 +303,11 @@ export class BridgeManager {
       }
 
       if (isAutoReply) {
+        // 按需建卡：先登记状态，收到首个 assistant.delta 时再创建流式卡片
+        // 这样如果一上来就触发 turn.waiting，就不会产生上方多余的空流式卡片
         this.activeStreams.set(receipt.turnId, {
           chatId: msg.chatId,
-          cardHandle,
+          cardHandle: null,
           textBuffer: '',
           lastPatchTime: Date.now(),
           patchTimer: null
@@ -365,14 +400,29 @@ export class BridgeManager {
               this.pendingWaitsByChat.delete(pending.chatId);
               this.pendingWaitsByRequest.delete(waitRequestId);
 
-              if (actionEvt.messageId && pending.cardData) {
-                const resolvedCard = buildQuestionResolvedCard({
-                  header: pending.cardData.header || '已回答',
-                  question: pending.cardData.question || '',
-                  selectedAnswer: answer,
-                  operatorName: actionEvt.operatorName || '飞书用户'
+              const who = actionEvt.operatorName ? ` (操作人: ${actionEvt.operatorName})` : '';
+              const metaHeader = '❓ 选项确认';
+              const metaSummary = `> ❓ **${pending.cardData?.question || '提问'}**\n> **已选择**: 🎯 **${answer}**${who}`;
+
+              if (actionEvt.messageId) {
+                const waitingCard = buildFollowupStreamingCard({
+                  metaHeader,
+                  metaSummary,
+                  body: '',
+                  isCompleted: false
                 });
-                await this.feishu.updateCard(actionEvt.messageId, resolvedCard);
+                await this.feishu.updateCard(actionEvt.messageId, waitingCard);
+
+                // 将后续流式输出接力挂接到该卡片上
+                this.activeStreams.set(pending.turnId, {
+                  chatId: pending.chatId,
+                  targetMessageId: actionEvt.messageId,
+                  metaHeader,
+                  metaSummary,
+                  textBuffer: '',
+                  lastPatchTime: Date.now(),
+                  patchTimer: null
+                });
               }
               return {
                 toast: {
@@ -395,13 +445,30 @@ export class BridgeManager {
               this.pendingWaitsByChat.delete(pending.chatId);
               this.pendingWaitsByRequest.delete(waitRequestId);
 
-              if (actionEvt.messageId && pending.cardData) {
-                const resolvedCard = buildPermissionWaitResolvedCard({
-                  toolName: pending.cardData.toolName || '工具',
-                  allow,
-                  operatorName: actionEvt.operatorName || '飞书用户'
+              const who = actionEvt.operatorName ? ` (操作人: ${actionEvt.operatorName})` : '';
+              const metaHeader = '🛡️ 操作授权';
+              const statusText = allow ? '✅ **已允许授权**' : '❌ **已拒绝请求**';
+              const metaSummary = `> 🛡️ **工具**: \`${pending.cardData?.toolName || '操作'}\`\n> **授权状态**: ${statusText}${who}`;
+
+              if (actionEvt.messageId) {
+                const waitingCard = buildFollowupStreamingCard({
+                  metaHeader,
+                  metaSummary,
+                  body: '',
+                  isCompleted: false
                 });
-                await this.feishu.updateCard(actionEvt.messageId, resolvedCard);
+                await this.feishu.updateCard(actionEvt.messageId, waitingCard);
+
+                // 将后续流式输出接力挂接到该卡片上
+                this.activeStreams.set(pending.turnId, {
+                  chatId: pending.chatId,
+                  targetMessageId: actionEvt.messageId,
+                  metaHeader,
+                  metaSummary,
+                  textBuffer: '',
+                  lastPatchTime: Date.now(),
+                  patchTimer: null
+                });
               }
               return {
                 toast: {
@@ -469,21 +536,37 @@ export class BridgeManager {
             stream.textBuffer += event.delta;
           }
 
-          // 节流推送至飞书卡片（100ms 刷新率，飞书原生打字机动画将平滑展开）
+          // 若属于常规会话且尚未建卡，按需创建飞书原生流式卡片
+          if (!stream.cardHandle && !stream.targetMessageId) {
+            stream.cardHandle = await this.feishu.createStreamingCard(stream.chatId);
+          }
+
           const now = Date.now();
-          if (now - stream.lastPatchTime > 100) {
-            stream.lastPatchTime = now;
-            if (stream.cardHandle && stream.textBuffer) {
+          const throttleInterval = stream.targetMessageId ? 300 : 100; // 普通卡片 patch 限制 300ms 避免 429
+
+          const doUpdate = async () => {
+            if (stream.targetMessageId && stream.metaSummary) {
+              const card = buildFollowupStreamingCard({
+                metaHeader: stream.metaHeader,
+                metaSummary: stream.metaSummary,
+                body: stream.textBuffer,
+                isCompleted: false
+              });
+              await this.feishu.updateCard(stream.targetMessageId, card);
+            } else if (stream.cardHandle && stream.textBuffer) {
               void this.feishu.updateStreamingContent(stream.cardHandle, stream.textBuffer);
             }
+          };
+
+          if (now - stream.lastPatchTime > throttleInterval) {
+            stream.lastPatchTime = now;
+            void doUpdate();
           } else if (!stream.patchTimer) {
             stream.patchTimer = setTimeout(() => {
               stream.patchTimer = null;
               stream.lastPatchTime = Date.now();
-              if (stream.cardHandle && stream.textBuffer) {
-                void this.feishu.updateStreamingContent(stream.cardHandle, stream.textBuffer);
-              }
-            }, 100);
+              void doUpdate();
+            }, throttleInterval);
           }
           break;
         }
@@ -495,7 +578,7 @@ export class BridgeManager {
               clearTimeout(stream.patchTimer);
               stream.patchTimer = null;
             }
-            if (stream.cardHandle) {
+            if (stream.cardHandle && stream.textBuffer.trim()) {
               await this.feishu.finishStreaming(stream.cardHandle, stream.textBuffer);
             }
             this.activeStreams.delete(turnId);
@@ -542,7 +625,8 @@ export class BridgeManager {
               if (msgId) cardMessageId = msgId;
               cardData = {
                 kind: 'permission',
-                toolName: wait.toolName
+                toolName: wait.toolName,
+                toolTitle: wait.toolTitle
               };
             } else if (wait.kind === 'form') {
               const formTitle = wait.form?.title || '表单待提交';
@@ -589,7 +673,15 @@ export class BridgeManager {
           }
 
           const finalContent = event.message?.text || stream.textBuffer;
-          if (stream.cardHandle) {
+          if (stream.targetMessageId && stream.metaSummary) {
+            const finalCard = buildFollowupStreamingCard({
+              metaHeader: stream.metaHeader,
+              metaSummary: stream.metaSummary,
+              body: finalContent,
+              isCompleted: true
+            });
+            await this.feishu.updateCard(stream.targetMessageId, finalCard);
+          } else if (stream.cardHandle) {
             await this.feishu.finishStreaming(stream.cardHandle, finalContent);
           }
           this.activeStreams.delete(turnId);
@@ -604,7 +696,15 @@ export class BridgeManager {
           }
 
           const errorContent = (stream.textBuffer ? stream.textBuffer + '\n\n' : '') + `> ⚠️ **生成中断或失败**: ${event.error?.message || '未知错误'}`;
-          if (stream.cardHandle) {
+          if (stream.targetMessageId && stream.metaSummary) {
+            const failedCard = buildFollowupStreamingCard({
+              metaHeader: stream.metaHeader,
+              metaSummary: stream.metaSummary,
+              body: errorContent,
+              isCompleted: true
+            });
+            await this.feishu.updateCard(stream.targetMessageId, failedCard);
+          } else if (stream.cardHandle) {
             await this.feishu.finishStreaming(stream.cardHandle, errorContent);
           }
           this.activeStreams.delete(turnId);
