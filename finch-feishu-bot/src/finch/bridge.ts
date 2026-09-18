@@ -569,25 +569,24 @@ export class BridgeManager {
         this.pendingConfirmations.delete(actionId);
 
         const targetMessageId = actionEvt.messageId || pending.messageId;
-        const who = actionEvt.operatorName ? ` (操作人: ${actionEvt.operatorName})` : '';
-        const metaHeader = '🛡️ 操作授权';
-        const statusText = decision === 'yes' ? '✅ **已允许授权**' : '❌ **已拒绝请求**';
-        const metaSummary = `> 🛡️ **${pending.title}**\n> ${pending.content}\n> **决策结果**: ${statusText}${who}`;
-
-        const waitingCard = buildFollowupStreamingCard({
-          metaHeader,
-          metaSummary,
-          body: '',
-          isCompleted: false
-        });
+        const activeTurnId = pending.turnId || Array.from(this.activeStreams.entries()).find(([_, s]) => s.chatId === pending.chatId)?.[0];
 
         if (targetMessageId) {
-          // 就地把确认卡片更新为流式接力卡片，移除按钮并显示加载提示
-          await this.feishu.updateCard(targetMessageId, waitingCard);
-
-          // 将后续流式输出接力挂接到该卡片上
-          const activeTurnId = pending.turnId || Array.from(this.activeStreams.entries()).find(([_, s]) => s.chatId === pending.chatId)?.[0];
           if (activeTurnId) {
+            // 如果该飞书会话正在进行对话 Turn，就地更新为流式接力卡片，等待后续回答
+            const who = actionEvt.operatorName ? ` (操作人: ${actionEvt.operatorName})` : '';
+            const metaHeader = '🛡️ 操作授权';
+            const statusText = decision === 'yes' ? '✅ **已允许授权**' : '❌ **已拒绝请求**';
+            const metaSummary = `> 🛡️ **${pending.title}**\n> ${pending.content}\n> **决策结果**: ${statusText}${who}`;
+
+            const waitingCard = buildFollowupStreamingCard({
+              metaHeader,
+              metaSummary,
+              body: '',
+              isCompleted: false
+            });
+            await this.feishu.updateCard(targetMessageId, waitingCard);
+
             this.activeStreams.set(activeTurnId, {
               chatId: pending.chatId,
               targetMessageId,
@@ -596,6 +595,15 @@ export class BridgeManager {
               textBuffer: '',
               lastPatchTime: Date.now(),
               patchTimer: null
+            });
+          } else {
+            // 如果没有关联的飞书流（如从主桌面窗口测试触发），直接原地更新为最终已决卡片，锁定并移除按钮！
+            await this.feishu.updateCardToResolved({
+              messageId: targetMessageId,
+              title: pending.title,
+              content: pending.content,
+              decision,
+              operatorName: actionEvt.operatorName
             });
           }
         }

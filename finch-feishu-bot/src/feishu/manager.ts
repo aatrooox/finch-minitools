@@ -310,7 +310,7 @@ export class FeishuManager {
     if (!this.client) return false;
 
     try {
-      await this.client.im.message.patch({
+      const res = await this.client.im.message.patch({
         path: {
           message_id: messageId
         },
@@ -318,6 +318,11 @@ export class FeishuManager {
           content: JSON.stringify(card)
         }
       });
+      this.ctx.logger.info(`updateCard patch result for ${messageId}:`, res);
+      if (res && (res as any).code !== undefined && (res as any).code !== 0) {
+        this.ctx.logger.error(`updateCard patch failed with code ${(res as any).code}:`, (res as any).msg);
+        return false;
+      }
       return true;
     } catch (err) {
       this.ctx.logger.error('Failed to patch card message:', err);
