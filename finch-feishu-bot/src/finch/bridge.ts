@@ -18,10 +18,12 @@ interface PendingConfirmation {
   resolve: (decision: 'yes' | 'no') => void;
 }
 
+const STORAGE_SESSION_PREFIX = 'feishu:session:';
+
 export class BridgeManager {
   // 保存活跃 Turn 的流式输出状态: key 为 turnId
   private activeStreams = new Map<string, StreamState>();
-  // 会话映射：chatId -> sessionId
+  // 会话映射：chatId -> sessionId 内存缓存
   private chatSessions = new Map<string, string>();
   // 等待用户点击确认的卡片：actionId -> PendingConfirmation
   private pendingConfirmations = new Map<string, PendingConfirmation>();
@@ -35,24 +37,53 @@ export class BridgeManager {
   }
 
   /**
+   * 获取或复用与 chatId 绑定的 Finch Session
+   */
+  private async getOrCreateSession(msg: InboundMessageContext): Promise<string> {
+    // 1. 先从内存 Map 查找
+    let sessionId = this.chatSessions.get(msg.chatId);
+    if (sessionId) {
+      // 验证 Session 是否仍然有效存在
+      const existing = await this.ctx.sessions.get(sessionId);
+      if (existing) {
+        return sessionId;
+      }
+    }
+
+    // 2. 从 ctx.storage 持久化层读取（解决小程序更新/重载后丢失会话的问题）
+    const storageKey = `${STORAGE_SESSION_PREFIX}${msg.chatId}`;
+    const persistedSessionId = await this.ctx.storage.get<string>(storageKey);
+    if (persistedSessionId) {
+      const existing = await this.ctx.sessions.get(persistedSessionId);
+      if (existing) {
+        this.chatSessions.set(msg.chatId, persistedSessionId);
+        return persistedSessionId;
+      }
+    }
+
+    // 3. 不存在或已被销毁，在 feishu 容器内创建新 Session
+    const title = msg.chatType === 'group' ? `群聊: ${msg.chatId.slice(-6)}` : `用户: ${msg.senderId.slice(-6)}`;
+    const sessionInfo = await this.ctx.sessions.create({
+      containerId: 'feishu',
+      title,
+      activity: 'interactive',
+      permissionMode: 'acceptCalls'
+    });
+
+    sessionId = sessionInfo.sessionId;
+    this.chatSessions.set(msg.chatId, sessionId);
+    await this.ctx.storage.set(storageKey, sessionId);
+    return sessionId;
+  }
+
+  /**
    * 处理从飞书收到的消息并转入 Finch Session
    */
   public async handleInboundMessage(msg: InboundMessageContext): Promise<void> {
     const isAutoReply = this.ctx.settings.get<boolean>('autoReply') ?? true;
 
     try {
-      let sessionId = this.chatSessions.get(msg.chatId);
-
-      // 如果尚未为此聊天建立 Finch Session，则在 feishu 容器内创建
-      if (!sessionId) {
-        const title = msg.chatType === 'group' ? `群聊: ${msg.chatId.slice(-6)}` : `用户: ${msg.senderId.slice(-6)}`;
-        const sessionInfo = await this.ctx.sessions.create({
-          containerId: 'feishu',
-          title
-        });
-        sessionId = sessionInfo.sessionId;
-        this.chatSessions.set(msg.chatId, sessionId);
-      }
+      const sessionId = await this.getOrCreateSession(msg);
 
       let cardHandle: CardSessionHandle | null = null;
       if (isAutoReply) {

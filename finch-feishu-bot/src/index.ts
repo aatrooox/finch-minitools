@@ -2,8 +2,23 @@ import type * as finch from 'finch';
 import { FeishuManager } from './feishu/manager.js';
 import { BridgeManager } from './finch/bridge.js';
 
+const FEISHU_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M22 2L11 13" />
+  <path d="M22 2L15 22L11 13L2 9L22 2Z" />
+</svg>`;
+
 export async function activate(ctx: finch.MiniToolContext) {
   ctx.logger.info('Activating Finch Feishu Bot...');
+
+  // 1. 注册运行时图标包，确保 sessionContainers 的 ext:feishu 图标能够正确被渲染显示
+  ctx.subscriptions.push(
+    ctx.icons.register('feishu', {
+      feishu: {
+        svg: FEISHU_SVG,
+        description: 'Feishu App Icon'
+      }
+    })
+  );
 
   const feishu = new FeishuManager(ctx);
   const bridge = new BridgeManager(ctx, feishu);
