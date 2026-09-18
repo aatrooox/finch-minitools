@@ -40,22 +40,22 @@ export async function activate(ctx: finch.MiniToolContext) {
   ctx.tools.register({
     name: 'feishu_ask_confirmation',
     title: '向飞书发送授权确认卡片',
-    description: '向指定的飞书群聊或单聊发送包含「是/授权」和「否/拒绝」按钮的交互卡片，并实时等待用户点击决策，返回授权结果。',
+    description: '向飞书发送包含「允许」和「拒绝」按钮的交互确认卡片。当用户要求授权测试、申请权限、确认敏感操作或做决策时，应直接调用本工具。chatId 自动推断当前会话（无需提供，禁止去翻阅文件或搜索配置）。',
     defaultEnabled: true,
     inputSchema: {
       type: 'object',
       properties: {
         chatId: {
           type: 'string',
-          description: '飞书 chat_id（群聊或私聊会话 ID）'
+          description: '飞书 chat_id（可选；在当前飞书会话中无需提供，留空自动解析，禁止去查找系统文件）'
         },
         title: {
           type: 'string',
-          description: '卡片标题，例如「敏感操作授权确认」'
+          description: '卡片标题，默认「操作确认」'
         },
         content: {
           type: 'string',
-          description: '确认内容描述，支持完整 Markdown 语法'
+          description: '确认内容描述，说明具体需要确认的事项，支持 Markdown'
         },
         yesLabel: {
           type: 'string',
@@ -70,15 +70,30 @@ export async function activate(ctx: finch.MiniToolContext) {
           description: '等待用户点击的超时时间（秒），默认 300 秒（5分钟）'
         }
       },
-      required: ['chatId', 'title', 'content']
+      required: ['content']
     },
     async execute(params: any) {
       const { chatId, title, content, yesLabel, noLabel, timeoutSeconds } = params;
       ctx.logger.info('Agent invoking feishu_ask_confirmation:', params);
 
+      const resolvedChatId = bridge.resolveChatId(chatId);
+      if (!resolvedChatId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                error: '无法自动解析飞书 chatId，且未提供 chatId 参数。'
+              })
+            }
+          ],
+          isError: true
+        };
+      }
+
       const result = await bridge.askConfirmation({
-        chatId,
-        title,
+        chatId: resolvedChatId,
+        title: title || '操作确认',
         content,
         yesLabel,
         noLabel,

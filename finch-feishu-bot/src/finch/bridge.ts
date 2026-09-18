@@ -73,6 +73,26 @@ export class BridgeManager {
   }
 
   /**
+   * 智能解析目标 chatId（若未传则自动推断当前活跃会话或最近绑定的会话）
+   */
+  public resolveChatId(chatId?: string): string | undefined {
+    if (chatId && chatId.trim()) return chatId.trim();
+
+    // 1. 优先从当前活跃的流式会话中寻找
+    for (const stream of this.activeStreams.values()) {
+      if (stream.chatId) return stream.chatId;
+    }
+
+    // 2. 从内存会话映射中取最近的一个
+    const chats = Array.from(this.chatSessions.keys());
+    if (chats.length > 0) {
+      return chats[chats.length - 1];
+    }
+
+    return undefined;
+  }
+
+  /**
    * 获取或复用与 chatId 绑定的 Finch Session
    */
   private async getOrCreateSession(msg: InboundMessageContext): Promise<string> {

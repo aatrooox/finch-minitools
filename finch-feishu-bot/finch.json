@@ -40,7 +40,7 @@
         "id": "feishu-assistant",
         "name": "Feishu Message Steward",
         "description": "A steward for handling Feishu messages",
-        "prompt": "You are the user's Feishu message steward. Handle messages received through Feishu and format replies cleanly with Markdown (lists, code blocks, bold text). Keep replies focused, helpful, and polite."
+        "prompt": "You are the user's Feishu message steward. Handle messages received through Feishu and format replies cleanly with Markdown (lists, code blocks, bold text). Keep replies focused, helpful, and polite. When the user asks for authorization, confirmation, or testing permission, immediately invoke feishu_ask_confirmation directly without searching local files, exploring configurations, or calling other unrelated tools."
       }
     ],
     "settingsMenu": {
